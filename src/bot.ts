@@ -4,7 +4,7 @@ import { classifyReaction, FALLBACK_EMOJI } from './classify';
 import { activity, log } from './log';
 import { fetchAttachment } from './attachments';
 import { OpencodeHttpError, opencode, type PromptPart } from './opencode';
-import { pendingPermissions, pendingQuestions } from './relay';
+import { pendingPermissions, pendingQuestions, type Relay } from './relay';
 import { registerRename } from './rename';
 import { registerModel } from './model';
 import { discard, takeScreenshot } from './tools/screenshot';
@@ -40,7 +40,31 @@ export function createBot(): Bot {
     await ctx.reply('Not authorised.');
   });
 
-  bot.command('whoami', ctx => ctx.reply(`Chat ID: ${ctx.chat.id} ✅ allowed`));
+  bot.command('whoami', async ctx => {
+    const fmt = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(2)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
+    const lines = [`Chat ID: ${ctx.chat.id} ✅ allowed`];
+    try {
+      const session = await opencode.latestSession();
+      if (session) {
+        const model = session.model
+          ? `${session.model.providerID}/${session.model.id}`
+          : 'n/a';
+        const t = session.tokens ?? {};
+        const tokens = `${fmt(t.input ?? 0)} in / ${fmt(t.output ?? 0)} out` +
+          (t.reasoning ? ` / ${fmt(t.reasoning)} reasoning` : '');
+        const cost = session.cost ? `$${session.cost.toFixed(2)}` : '$0.00';
+        lines.push(
+          `Session: ${session.title ?? session.slug ?? session.id}`,
+          `Model: ${model}`,
+          `Tokens: ${tokens}`,
+          `Cost: ${cost}`,
+        );
+      }
+    } catch {
+      lines.push('Session: unavailable');
+    }
+    await ctx.reply(lines.join('\n'));
+  });
 
   bot.command('start', ctx =>
     ctx.reply(
@@ -112,7 +136,6 @@ export function createBot(): Bot {
 
   registerRename(bot);
   registerModel(bot);
-
   bot.on('callback_query:data', async ctx => {
     const [kind, ...rest] = ctx.callbackQuery.data.split('|');
 
@@ -292,4 +315,14 @@ export function createBot(): Bot {
   bot.catch(err => console.error('[bot] error:', err.message));
 
   return bot;
+}
+
+/** /send <path> — forward a local file (under $HOME) to the allowed chats. */
+export function registerSend(bot: Bot, relay: Relay) {
+  bot.command('send', async ctx => {
+    const path = ctx.match?.trim();
+    if (!path) return void (await ctx.reply('Usage: /send <path>'));
+    const ok = await relay.sendFile(path);
+    if (!ok) await ctx.reply('No such file (only paths under your home directory).');
+  });
 }

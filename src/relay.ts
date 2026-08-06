@@ -1,7 +1,8 @@
 import type { Bot } from 'grammy';
 import { InlineKeyboard, InputFile } from 'grammy';
 import { existsSync, statSync } from 'node:fs';
-import { basename } from 'node:path';
+import { basename, resolve } from 'node:path';
+import os from 'node:os';
 import { config } from './config';
 import { log, noteWorking } from './log';
 import { internalSessions, opencode, type OpencodeEvent } from './opencode';
@@ -99,6 +100,27 @@ export class Relay {
         console.error('[relay] sendDocument failed:', (err as Error).message);
       }
     }
+  }
+
+  /**
+   * Send an arbitrary local file to every allowed chat, as a document.
+   * Paths outside the home directory are refused on principle.
+   */
+  async sendFile(path: string): Promise<boolean> {
+    const resolved = resolve(path);
+    if (!resolved.startsWith(os.homedir())) return false;
+    if (!existsSync(resolved)) return false;
+    for (const chatId of chats()) {
+      try {
+        await this.bot.api.sendDocument(chatId, new InputFile(resolved), {
+          caption: `📄 ${basename(resolved)}`,
+        });
+      } catch (err) {
+        console.error('[relay] sendFile failed:', (err as Error).message);
+        return false;
+      }
+    }
+    return true;
   }
 
   /**

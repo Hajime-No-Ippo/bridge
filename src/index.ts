@@ -1,5 +1,5 @@
 import { config } from './config';
-import { createBot } from './bot';
+import { createBot, registerSend } from './bot';
 import { log, noteEvent } from './log';
 import { opencode } from './opencode';
 import { Relay } from './relay';
@@ -42,6 +42,7 @@ async function main() {
 
   const bot = createBot();
   const relay = new Relay(bot);
+  registerSend(bot, relay);
 
   // Consume the event stream independently of polling — it reconnects on its own.
   void (async () => {

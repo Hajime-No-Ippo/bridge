@@ -62,4 +62,5 @@ the server on `127.0.0.1`, caps inbound files at 8MB. `.env` is gitignored.
 
 - Relays all sessions (no reliable "current session" filter), broadcasts to all
   allowlisted chats, edits track the first chat only.
-- `src/tools/operate_*.ts` are placeholders; only `screenshot.ts` is implemented.
+- Browser operation helpers now exist under `src/tools/operate_*.ts`, but they are
+  low-level wrappers (not yet wired to Telegram commands).

@@ -9,6 +9,16 @@ export interface OpencodeEvent {
 export interface SessionInfo {
   id: string;
   title?: string;
+  slug?: string;
+  agent?: string;
+  model?: { id: string; providerID: string; variant?: string };
+  cost?: number;
+  tokens?: {
+    input?: number;
+    output?: number;
+    reasoning?: number;
+    cache?: { read?: number; write?: number };
+  };
 }
 
 export interface ModelInfo {
