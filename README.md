@@ -27,8 +27,7 @@ user units; `make logs` tails them. (`OPENCODE_DIR` = the repo you work on, not 
 |---|---|
 | text | submitted as a prompt |
 | photo / file | attached to the prompt (caption is the instruction) |
-| `/model <id>` · `/models` | switch / list models |
-| `/rename <title>` | rename current session |
+| `/model <id>` · `/models` | switch / list models || `/rename <title>` | rename current session |
 | `/stop` | abort current session |
 | `/screenshot` | capture the TUI window |
 | `!cmd` | run a shell command directly |
@@ -47,6 +46,12 @@ Answering them is what makes remote driving work.
 - Config: `TELEGRAM_ALLOWED_CHAT_IDS`, `OPENCODE_URL`, `OPENCODE_SERVER_PASSWORD`,
   `EDIT_INTERVAL_MS`, `MAX_INBOUND_BYTES`, `MAX_IMAGE_BYTES`, `IMAGE_MAX_AGE_MS`,
   `TEMP_IMAGE_TTL_MS`, `SILENCE_WARN_MS` (see `.env.example`).
+- Vision/PDF: a model only accepts a photo or PDF if it advertises that input
+  capability. The default `opencode` free tier and deepseek/moonshotai are
+  text-only for PDFs. `make opencode-config` installs a provider config
+  (deploy/opencode.example.json) that adds OpenAI (gpt-5.3-codex, gpt-4o) and
+  Anthropic (claude-sonnet/opus) to the `/model` list — both read images and
+  PDFs. It never overwrites an existing `~/.config/opencode/opencode.json`.
 
 ## Security
 

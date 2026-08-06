@@ -4,7 +4,7 @@
 
 .DEFAULT_GOAL := help
 
-.PHONY: help deps install setup check bridge kill restart dev start test typecheck install-service uninstall-service logs
+.PHONY: help deps install setup opencode-config check bridge kill restart dev start test typecheck install-service uninstall-service logs
 
 PORT     := 4096
 HEALTH   := http://127.0.0.1:$(PORT)/doc
@@ -81,6 +81,22 @@ install: ## install node dependencies
 setup: ## first time: create .env from the template
 	@test -f .env || { cp .env.example .env; \
 		echo ">> .env created — set TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_CHAT_IDS"; }
+
+OPENCODE_CONFIG_DIR := $(HOME)/.config/opencode
+
+# Installs the shipped provider config (opencode/opencode.json) so vision/PDF
+# models are switchable via /model. Copy only: never overwrites an existing
+# config, because opencode refuses to start on unknown keys and users may
+# already have one. They can then merge the provider blocks by hand.
+opencode-config: ## install deploy/opencode.example.json as the global opencode config (won't overwrite)
+	@mkdir -p $(OPENCODE_CONFIG_DIR)
+	@if [ -f $(OPENCODE_CONFIG_DIR)/opencode.json ]; then \
+		echo ">> $(OPENCODE_CONFIG_DIR)/opencode.json exists — not touching it."; \
+		echo ">> merge the provider blocks from deploy/opencode.example.json manually."; \
+	else \
+		cp deploy/opencode.example.json $(OPENCODE_CONFIG_DIR)/opencode.json; \
+		echo ">> installed $(OPENCODE_CONFIG_DIR)/opencode.json"; \
+	fi
 
 check: ## verify prerequisites before running
 	@command -v bun >/dev/null || { echo "bun missing — run: make deps"; exit 1; }
