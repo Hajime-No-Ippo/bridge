@@ -1,0 +1,10 @@
+# Dependencies
+node_modules/
+
+# Keys and API endpoints
+.env
+
+bun.lockb
+*.log
+.DS_Store
+

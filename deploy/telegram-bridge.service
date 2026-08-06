@@ -1,0 +1,43 @@
+[Unit]
+Description=telegram-bridge — Telegram front-end for opencode
+After=network-online.target opencode-server.service
+# Wants, not Requires: the bridge survives the server restarting under it (the
+# event stream reconnects with backoff), so a server blip should not take the
+# bridge down with it.
+Wants=network-online.target opencode-server.service
+
+# MUST live in [Unit], not [Service]. systemd moved these in v229 and silently
+# ignores them under [Service] — so misplacing them leaves the default limit of
+# 5 starts per 10s in force, and a persistent fault (a duplicate instance
+# holding the Telegram getUpdates lock) makes systemd give up permanently.
+# That is precisely the outage this unit exists to prevent.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=__WORKDIR__
+
+# `start`, never `dev`. `bun --watch` restarts on any file change — log
+# rotation, rsync, a git pull — which would drop turns mid-reply on a server.
+ExecStart=__BUN__ run start
+
+Restart=always
+RestartSec=5
+
+# Startup aborts with exit 1 while opencode is unreachable; systemd simply
+# retries every RestartSec until the server is listening.
+EnvironmentFile=__WORKDIR__/.env
+# Set to 1 for per-event logging and every drop reason.
+Environment=BRIDGE_DEBUG=
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=telegram-bridge
+
+# The bot executes shell commands by design, so it cannot be sandboxed away
+# from the filesystem — but it has no business gaining privileges.
+NoNewPrivileges=true
+PrivateTmp=false
+
+[Install]
+WantedBy=default.target

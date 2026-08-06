@@ -1,0 +1,29 @@
+[Unit]
+Description=opencode headless server
+Documentation=https://opencode.ai
+After=network-online.target
+Wants=network-online.target
+
+# Never give up. systemd stops retrying after 5 starts in 10s by default, which
+# on an unattended box means one bad minute leaves the server down for good.
+# This belongs in [Unit] — under [Service] it is silently ignored (systemd v229+).
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+
+# The directory opencode treats as the project: its worktree, and what counts
+# as an "external directory" needing permission. NOT the bridge's own folder —
+# set OPENCODE_DIR when installing to point at the project you actually work on.
+WorkingDirectory=__OPENCODE_WORKDIR__
+
+ExecStart=__OPENCODE__ serve --port __PORT__
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=opencode-server
+
+[Install]
+WantedBy=default.target
