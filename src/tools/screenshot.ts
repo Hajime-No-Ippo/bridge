@@ -21,6 +21,8 @@ const run = (cmd: string, args: string[]): string | undefined => {
   }
 };
 
+const have = (cmd: string): boolean => run('which', [cmd]) !== undefined;
+
 /** tty of the attached TUI, e.g. `ttys004`. */
 function tuiTty(): string | undefined {
   const ps = run('ps', ['-eo', 'pid,tty,args']);
@@ -66,6 +68,12 @@ export interface Screenshot {
  */
 export function takeScreenshot(): Screenshot {
   const path = join(tmpdir(), `opencode-tui-${Date.now()}.png`);
+  if (process.platform === 'linux') return linuxCapture(path);
+  return macCapture(path);
+}
+
+/** macOS: capture via screencapture, window when we can find the TUI's Terminal window. */
+function macCapture(path: string): Screenshot {
   const tty = tuiTty();
   const id = tty ? windowId(tty) : undefined;
 
@@ -85,6 +93,65 @@ export function takeScreenshot(): Screenshot {
   throw new Error(
     'screencapture produced no image. Grant Screen Recording to your terminal ' +
     'in System Settings → Privacy & Security → Screen Recording, then restart it.',
+  );
+}
+
+/** Terminal emulator PID running the TUI, e.g. gnome-terminal's child. */
+function tuiPid(): number | undefined {
+  const ps = run('ps', ['-eo', 'pid,ppid,tty,args']);
+  const lines = ps?.split('\n').filter(l => l.includes('opencode attach')) ?? [];
+  if (lines.length === 0) return undefined;
+  const ppid = Number(lines[0].trim().split(/\s+/)[2]);
+  return Number.isFinite(ppid) && ppid > 0 ? ppid : undefined;
+}
+
+/**
+ * Linux: X11 captures the TUI's window when xdotool can find it, else the
+ * whole display. Wayland falls back to grim (window capture needs a portal).
+ */
+function linuxCapture(path: string): Screenshot {
+  const wayland = (process.env.XDG_SESSION_TYPE ?? '').toLowerCase().includes('wayland');
+  if (!wayland && have('xdotool')) {
+    const pid = tuiPid();
+    if (pid !== undefined) {
+      const id = run('xdotool', ['search', '--pid', String(pid), '--onlyvisible']);
+      if (id && have('import')) {
+        // xdotool may match several; the window the terminal paints into is the last.
+        const win = id.split('\n').at(-1)?.trim();
+        if (win) {
+          run('import', ['-window', win, path]);
+          if (existsSync(path) && statSync(path).size > 0) {
+            return { path, scope: 'window', bytes: statSync(path).size };
+          }
+        }
+      }
+    }
+  }
+
+  if (wayland && have('grim')) {
+    run('grim', [path]);
+    if (existsSync(path) && statSync(path).size > 0) {
+      return { path, scope: 'display', bytes: statSync(path).size };
+    }
+  }
+
+  if (have('import')) {
+    run('import', ['-window', 'root', path]);
+    if (existsSync(path) && statSync(path).size > 0) {
+      return { path, scope: 'display', bytes: statSync(path).size };
+    }
+  }
+
+  if (have('scrot')) {
+    run('scrot', ['-o', path]);
+    if (existsSync(path) && statSync(path).size > 0) {
+      return { path, scope: 'display', bytes: statSync(path).size };
+    }
+  }
+
+  throw new Error(
+    'No screenshot tool found on this system. Install grim (Wayland), or ' +
+    'imagemagick + xdotool (X11) — e.g. sudo apt install grim / imagemagick xdotool.',
   );
 }
 
