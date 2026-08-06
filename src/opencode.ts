@@ -172,15 +172,48 @@ export const opencode = {
   abort: (sessionID: string) => post<boolean>(`/session/${sessionID}/abort`),
 
   /**
-   * Every model the server knows about.
+   * Every model the bridge may switch a session to.
    *
-   * Wrapped in `{ location, data }` rather than returned as a bare array, and
-   * older builds return the array directly — accept both.
+   * Two sources, merged and deduped by `providerID/id`:
+   *
+   * 1. `/api/model` — what the TUI's model switcher offers. Wrapped in
+   *    `{ location, data }` on current builds, a bare array on older ones —
+   *    accept both.
+   * 2. `/provider` — config-defined models (openai, anthropic, deepseek)
+   *    load here but NOT into `/api/model`, so they would otherwise be
+   *    unreachable from `/model` despite being perfectly switchable.
+   *    Only providers the server reports as `connected` are merged, so the
+   *    ibraries-of-nothing from the models.dev catalogue don't leak in.
    */
   async listModels(): Promise<ModelInfo[]> {
-    const res = await request<{ data?: ModelInfo[] } | ModelInfo[]>('/api/model');
-    const list = Array.isArray(res) ? res : res?.data ?? [];
-    return list.filter(m => m && typeof m.id === 'string' && typeof m.providerID === 'string');
+    const [modelRes, providerRes] = await Promise.all([
+      request<{ data?: ModelInfo[] } | ModelInfo[]>('/api/model'),
+      request<{ all?: Array<{ id?: string; models?: Record<string, ModelInfo> }>; connected?: string[] }>(
+        '/provider',
+      ),
+    ]);
+    const fromApi = Array.isArray(modelRes) ? modelRes : modelRes?.data ?? [];
+    const connected = new Set(providerRes?.connected ?? []);
+    const seen = new Set<string>();
+    const out: ModelInfo[] = [];
+    for (const m of fromApi) {
+      if (!m || typeof m.id !== 'string' || typeof m.providerID !== 'string') continue;
+      const key = `${m.providerID}/${m.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(m);
+    }
+    for (const provider of providerRes?.all ?? []) {
+      if (!provider?.id || !connected.has(provider.id)) continue;
+      for (const m of Object.values(provider.models ?? {})) {
+        if (!m || typeof m.id !== 'string' || typeof m.providerID !== 'string') continue;
+        const key = `${m.providerID}/${m.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(m);
+      }
+    }
+    return out;
   },
 
   /**
