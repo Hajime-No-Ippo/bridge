@@ -32,6 +32,16 @@ export interface BrowserTarget {
 type PageAction = 'execute_javascript' | 'get_text' | 'query_dom';
 
 function callDriver<T>(tool: string, args?: Record<string, unknown>): T {
+  const parsed = callDriverRaw(tool, args);
+  return (parsed.structuredContent ?? {}) as T;
+}
+
+/**
+ * Same as callDriver but returns the full untyped driver response.
+ * Use when the result comes in content[].text rather than structuredContent
+ * (e.g. execute_javascript).
+ */
+function callDriverRaw(tool: string, args?: Record<string, unknown>): DriverResult {
   const cmd = ['call', tool];
   if (args) cmd.push(JSON.stringify(args));
   cmd.push('--raw', '--compact');
@@ -59,7 +69,7 @@ function callDriver<T>(tool: string, args?: Record<string, unknown>): T {
     throw new Error(text || `${DRIVER} reported an error for ${tool}`);
   }
 
-  return (parsed.structuredContent ?? {}) as T;
+  return parsed;
 }
 
 export function openBrowser(bundleID: string, url?: string): void {
@@ -78,9 +88,12 @@ function bestWindow(pid: number): number | undefined {
   const windows = callDriver<{ windows?: WindowRow[] }>('list_windows').windows ?? [];
   const candidates = windows
     .filter(w => w.pid === pid && w.layer === 0 && typeof w.window_id === 'number')
+    // Off-screen and off-current-space windows are Chrome's internal
+    // helper windows (dock menu, fullscreen backing stores). They must
+    // not beat a visible tab — z_index alone can push them above.
+    .filter(w => w.is_on_screen !== false && w.on_current_space !== false)
     .sort((a, b) => {
-      const score = (w: WindowRow) =>
-        (w.on_current_space ? 4 : 0) + (w.is_on_screen ? 2 : 0) + (typeof w.z_index === 'number' ? w.z_index / 1000 : 0);
+      const score = (w: WindowRow) => typeof w.z_index === 'number' ? w.z_index : 0;
       return score(b) - score(a);
     });
   return candidates[0]?.window_id;
@@ -117,4 +130,30 @@ export function pageCall(
     action,
     ...extra,
   });
+}
+
+/**
+ * Execute JS in the target browser tab and return the raw text result.
+ * Unlike `pageCall`, which expects structuredContent, `execute_javascript`
+ * returns plain text wrapped in a content array — this unwraps it.
+ */
+export function pageJs(target: BrowserTarget, javascript: string): string {
+  const raw = callDriverRaw('page', {
+    pid: target.pid,
+    window_id: target.windowID,
+    action: 'execute_javascript',
+    javascript,
+  });
+  if (typeof raw === 'string') return raw;
+  if (typeof raw === 'object' && raw !== null) {
+    const content = (raw as any).content;
+    if (Array.isArray(content)) {
+      const textItem = content.find((c: any) => c?.type === 'text');
+      if (textItem?.text) {
+        const m = /```\n?([\s\S]*?)```/.exec(textItem.text);
+        return m ? m[1].trim() : textItem.text;
+      }
+    }
+  }
+  return JSON.stringify(raw);
 }

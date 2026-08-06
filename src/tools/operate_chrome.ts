@@ -1,4 +1,4 @@
-import { openBrowser, pageCall, resolveBrowserTarget } from './browser_ops';
+import { openBrowser, pageCall, pageJs, resolveBrowserTarget } from './browser_ops';
 
 const CHROME_BUNDLE_ID = 'com.google.Chrome';
 
@@ -15,7 +15,7 @@ export interface BrowserOperationResult {
   pid: number;
   windowID: number;
   action: 'execute_javascript' | 'get_text' | 'query_dom';
-  data: Record<string, unknown>;
+  data: Record<string, unknown> | string;
 }
 
 export async function operateChrome(op: ChromeOperation = {}): Promise<BrowserOperationResult> {
@@ -29,7 +29,7 @@ export async function operateChrome(op: ChromeOperation = {}): Promise<BrowserOp
     return {
       ...target,
       action: 'execute_javascript',
-      data: pageCall(target, 'execute_javascript', { javascript: op.javascript }),
+      data: pageJs(target, op.javascript),
     };
   }
 

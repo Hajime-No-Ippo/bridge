@@ -1,7 +1,7 @@
 import type { Bot } from 'grammy';
 import { InlineKeyboard, InputFile } from 'grammy';
 import { existsSync, statSync } from 'node:fs';
-import { basename, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import os from 'node:os';
 import { config } from './config';
 import { log, noteWorking } from './log';
@@ -107,7 +107,8 @@ export class Relay {
    * Paths outside the home directory are refused on principle.
    */
   async sendFile(path: string): Promise<boolean> {
-    const resolved = resolve(path);
+    const expanded = path.startsWith('~/') ? join(os.homedir(), path.slice(2)) : path;
+    const resolved = resolve(expanded);
     if (!resolved.startsWith(os.homedir())) return false;
     if (!existsSync(resolved)) return false;
     for (const chatId of chats()) {
