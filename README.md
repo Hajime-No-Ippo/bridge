@@ -6,13 +6,16 @@ The opencode **server is the hub**; the TUI and this bridge are both clients of 
 
 ```
 opencode serve --port 4096          ← holds the sessions
-   ├── opencode attach :4096        ← your TUI, on your desk
+   ├── opencode attach :4096        ← your TUI, on your desk (optional)
    └── telegram-bridge              ← this script
 ```
 
-Messages from Telegram are typed into the TUI's prompt box (`/tui/append-prompt` +
-`/tui/submit-prompt`) rather than sent straight to the session. The TUI stays the
-single writer, so what's on your screen and what's in the chat can't drift apart.
+Prompts are submitted over the headless API (`/session/{id}/prompt_async`) and the
+reply streams back on `/event`, so the bridge works with **no TUI attached at all**.
+A TUI stays useful for watching the session on your desk, and the two views cannot
+drift because they read the same events. Earlier builds routed writes through the
+TUI's prompt box (`/tui/append-prompt` + `/tui/submit-prompt`); that path requires
+a live TUI, so the headless one is the default now.
 
 ## Setup
 
@@ -34,31 +37,45 @@ their official scripts). `make check` verifies everything is ready; `make dev` r
 3. **Learn your chat ID.** Run `bun start`, send `/whoami` to the bot, put the ID it
    reports into `TELEGRAM_ALLOWED_CHAT_IDS`, restart.
 
-4. **Run it**, with the server and TUI already up:
+4. **Run it**, with the server already up:
    ```bash
    opencode serve --port 4096              # terminal 1
-   opencode attach http://127.0.0.1:4096   # terminal 2
+   opencode attach http://127.0.0.1:4096   # terminal 2 (optional — the bridge runs without it)
    bun start                               # terminal 3
    ```
+
+`make bridge` starts the server if it is down and runs the bridge; `make dev` runs
+with `bun --watch`. On Linux you can instead install the server + bridge as systemd
+user units: `make install-service OPENCODE_DIR=~/code/my-project`, then `make logs`
+to tail both. (`OPENCODE_DIR` is the directory opencode serves — the repo you
+actually work on, not this one.)
 
 ## Commands
 
 | Command | Effect |
 |---|---|
-| any text | typed into the TUI prompt and submitted |
+| any text | submitted as a prompt to the current session |
+| photo / file | downloaded and attached to the prompt (caption is the instruction) |
 | `/status` | server health, URL, session count |
 | `/sessions` | ten most recent sessions |
 | `/rename <title>` | rename the most recent session |
-| `/model <provider/model-id>` | switch the model of the most recent session |
+| `/models` | list every model the server knows, grouped by provider |
+| `/model <model-id>` | switch the model of the most recent session |
 | `/screenshot` | capture the terminal window running the TUI |
 | `/stop` | abort the most recent session |
 | `/whoami` | your chat ID |
-| `/help` | list all commands |
-| `!cmd` | run a shell command in the most recent session |
+| `/start`, `/help` | command list |
+| `!cmd` | run a shell command directly — no model inference, output streamed back |
+
+`/model` resolves fuzzy before switching: bare ids work (`deepseek-v4-pro`), it
+suggests closest matches for unknown input, and it refuses when the catalogue is
+unreachable so a bad ref cannot brick a session silently.
 
 Permission requests appear as **Once / Always / Deny** buttons; questions appear as
 option buttons. Without answering them the session just blocks, so this is the part
-that makes remote driving actually work.
+that makes remote driving actually work. If the bridge restarts with a permission
+still pending, it re-posts the buttons on boot rather than leaving the session
+stuck forever.
 
 Plain-text prompts get an instant 👍, then a **semantic upgrade**: the bridge asks
 the server's own model (in a throwaway session that is never mirrored to the chat)
@@ -75,6 +92,8 @@ choices are oblique. If classification fails or times out, the 👍 simply stays
   roughly one edit per second per chat.
 - `session.idle` ends a turn: flush immediately, then the next turn opens a new message.
 - Output past ~3800 chars spills into a fresh message, split on a newline where possible.
+- A submitted prompt that produces **no** session traffic within `SILENCE_WARN_MS`
+  (default 20s) gets a 🔇 warning — the server accepted it but nothing is processing it.
 - `tui.*` events the bridge itself caused are dropped, or it would mirror itself in a loop.
 - The event stream reconnects with exponential backoff; a drop is normal.
 
@@ -85,7 +104,10 @@ This bot can run anything on your machine. It fails closed:
 - Empty `TELEGRAM_ALLOWED_CHAT_IDS` refuses to start.
 - Every non-allowlisted chat is rejected and logged.
 - Keep the server on `--hostname 127.0.0.1`.
-- Set `OPENCODE_SERVER_PASSWORD` if anything else can reach the port.
+- Set `OPENCODE_SERVER_PASSWORD` if anything else can reach the port; the bridge
+  sends Basic auth when it is configured.
+- Inbound files are capped at `MAX_INBOUND_BYTES` (default 8MB) — checked twice,
+  since Telegram omits the declared size for photos.
 
 `.env` is gitignored. Don't commit the token.
 
@@ -130,5 +152,5 @@ worth knowing before you point this at a directory of private images.
 - Broadcasts to all allowlisted chats; there's no per-chat session routing yet.
 - Message IDs are tracked for the first allowlisted chat only, so edits in a second
   chat will fail. Fine for a single user.
-- No *inbound* file/photo handling — outbound images work, but you cannot send
-  the agent a picture from your phone.
+- The `src/tools/operate_*.ts` stubs (chrome, gmail, twitter, job polling) are
+  placeholders — only `screenshot.ts` is implemented.
