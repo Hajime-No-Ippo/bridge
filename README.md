@@ -1,5 +1,9 @@
 # opencode ↔ Telegram bridge
 
+> Telegram-bridged OS automation agent: steer a live opencode session from your
+> phone — browser control (macOS cua-driver / Linux CDP), pending-question
+> lifecycle, attachment capability guard.
+
 Mirror a live opencode session to Telegram and steer it from your phone.
 
 ```
