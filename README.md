@@ -1,4 +1,4 @@
-# opencode ↔ Telegram bridge
+# bridge
 
 > Telegram-bridged OS automation agent: steer a live opencode session from your
 > phone — browser control (macOS cua-driver / Linux CDP), pending-question
