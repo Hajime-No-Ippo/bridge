@@ -86,7 +86,7 @@ Both block the turn until answered, so the bridge never lets one sit forever:
 ## Security
 
 Fails closed: refuses to start with an empty allowlist, rejects unknown chats, keeps
-the server on `127.0.0.1`, caps inbound files at 8MB. `.env` is gitignored.
+the server on `127.0.0.1`, caps inbound files at 8MB.
 
 ## Known gaps
 
@@ -100,3 +100,7 @@ the server on `127.0.0.1`, caps inbound files at 8MB. `.env` is gitignored.
   means adding `await`, since CDP is async where `execFileSync` was not.
 - Prompts submitted while a turn is blocked are recorded by opencode but never
   run, and releasing the block does not replay them. Re-send after answering.
+
+## Contributing
+
+Found a bug or have an idea? Open an issue — reports and suggestions are welcome.
