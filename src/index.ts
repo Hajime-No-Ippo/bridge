@@ -3,6 +3,7 @@ import { createBot, registerSend } from './bot';
 import { log, noteEvent } from './log';
 import { opencode } from './opencode';
 import { Relay } from './relay';
+import { sweepTempImages } from './back_slash_commands/screenshot';
 
 const controller = new AbortController();
 
@@ -17,6 +18,9 @@ process.on('uncaughtException', err => {
 });
 
 async function main() {
+  // Clear out the previous run's screenshots before new ones can pile up.
+  sweepTempImages(config.tempImageTtlMs);
+
   try {
     const health = await opencode.health();
     if (!health.healthy) throw new Error('server reports unhealthy');

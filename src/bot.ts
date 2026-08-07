@@ -1,4 +1,4 @@
-import { Bot } from 'grammy';
+import { Bot, InputFile } from 'grammy';
 import { config } from './config';
 import { classifyReaction, FALLBACK_EMOJI } from './classify';
 import { activity, log } from './log';
@@ -7,6 +7,7 @@ import { OpencodeHttpError, opencode, type PromptPart } from './opencode';
 import { pendingPermissions, pendingQuestions, supersedeQuestions, type Relay } from './relay';
 import { registerRename } from './rename';
 import { registerModel } from './model';
+import { discard, takeScreenshot } from './back_slash_commands/screenshot';
 
 // Single source of truth for the command list — /start and /help both send it,
 // so the two can never drift apart.
@@ -15,6 +16,7 @@ const HELP_TEXT =
   '/sessions — list recent sessions\n' +
   '/rename <title> — rename current session\n' +
   '/model <provider/model-id> — switch model of current session\n' +
+  '/screenshot — capture the TUI window\n' +
   '/stop — abort the running session\n' +
   '/whoami — your chat ID, what you are using\n' +
   '/help — this list\n' +
@@ -106,6 +108,29 @@ export function createBot(): Bot {
       await ctx.reply(`Aborted ${latest.title ?? latest.id}`);
     } catch (err) {
       await ctx.reply(`Failed: ${(err as Error).message}`);
+    }
+  });
+
+  // Sent as a document, not a photo: Telegram re-encodes photos to JPEG and caps
+  // the long side at 1280px, which turns terminal text into mush. A document
+  // arrives byte-for-byte.
+  bot.command('screenshot', async ctx => {
+    let shot;
+    try {
+      shot = takeScreenshot();
+    } catch (err) {
+      return void (await ctx.reply((err as Error).message));
+    }
+    try {
+      await ctx.replyWithDocument(new InputFile(shot.path), {
+        caption: shot.scope === 'window'
+          ? '📸 opencode TUI window'
+          : '📸 full display (could not find the TUI window)',
+      });
+    } catch (err) {
+      await ctx.reply(`Could not send the screenshot: ${(err as Error).message}`);
+    } finally {
+      discard(shot.path);
     }
   });
 

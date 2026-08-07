@@ -29,6 +29,7 @@ user units; `make logs` tails them. (`OPENCODE_DIR` = the repo you work on, not 
 | photo / file | attached to the prompt (caption is the instruction) |
 | `/model <id>` · `/models` | switch / list models || `/rename <title>` | rename current session |
 | `/stop` | abort current session |
+| `/screenshot` | capture the TUI window |
 | `!cmd` | run a shell command directly |
 | `/status` · `/sessions` · `/whoami` · `/help` | status, list, your ID, help |
 
@@ -53,9 +54,12 @@ Both block the turn until answered, so the bridge never lets one sit forever:
 - Streaming: cumulative part text + debounced `editMessageText` (≈1/s), split past
   ~3800 chars. `session.idle` flushes the turn.
 - Prompt with no activity after `SILENCE_WARN_MS` (20s) gets a 🔇 warning.
+- Images: `/screenshot` captures the TUI; the relay also uploads fresh `.png` paths
+  the agent's own `screenshot` skill produces. Sent as documents, deduped, mtime-capped.
 - Config: `TELEGRAM_ALLOWED_CHAT_IDS`, `OPENCODE_URL`, `OPENCODE_SERVER_PASSWORD`,
-  `EDIT_INTERVAL_MS`, `MAX_INBOUND_BYTES`, `SILENCE_WARN_MS`, `PENDING_TTL_MS`,
-  `PENDING_NUDGE_MS` (see `.env.example`).
+  `EDIT_INTERVAL_MS`, `MAX_INBOUND_BYTES`, `MAX_IMAGE_BYTES`, `IMAGE_MAX_AGE_MS`,
+  `TEMP_IMAGE_TTL_MS`, `SILENCE_WARN_MS`, `PENDING_TTL_MS`, `PENDING_NUDGE_MS`
+  (see `.env.example`).
 - Vision/PDF: a model only accepts a photo or PDF if it advertises that input
   capability. The default `opencode` free tier and deepseek/moonshotai are
   text-only for PDFs. `make opencode-config` installs a provider config
