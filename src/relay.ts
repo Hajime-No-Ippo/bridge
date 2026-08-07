@@ -1,12 +1,12 @@
 import type { Bot } from 'grammy';
 import { InlineKeyboard, InputFile } from 'grammy';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import os from 'node:os';
 import { config } from './config';
 import { log, noteWorking } from './log';
 import { internalSessions, opencode, type OpencodeEvent } from './opencode';
-import { TG_LIMIT, extractImagePaths, renderTool, splitAt, toTelegramHtml } from './render';
+import { TG_LIMIT, renderTool, splitAt, toTelegramHtml } from './render';
 import { TaskKind } from './classify';
 
 interface TurnState {
@@ -93,25 +93,8 @@ export function raisedDir(reply: string): DirKind | null {
 export class Relay {
   private turns = new Map<string, TurnState>();
   private titles = new Map<string, string>();
-  /** Part updates are cumulative and repeat, so a path must only be sent once. */
-  private sentImages = new Set<string>();
 
   constructor(private bot: Bot) { }
-
-  /**
-   * Ship an image the agent just produced. Sent as a document, not a photo:
-   * Telegram re-encodes photos to JPEG and caps the long side at 1280px, which
-   * is exactly wrong for a UI screenshot you are trying to inspect.
-   */
-  private async sendImage(path: string, caption: string) {
-    for (const chatId of chats()) {
-      try {
-        await this.bot.api.sendDocument(chatId, new InputFile(path), { caption });
-      } catch (err) {
-        console.error('[relay] sendDocument failed:', (err as Error).message);
-      }
-    }
-  }
 
   /**
    * Send an arbitrary local file to every allowed chat, as a document.
@@ -133,35 +116,6 @@ export class Relay {
       }
     }
     return true;
-  }
-
-  /**
-   * Forward any images referenced in a chunk of agent output. Existence is
-   * checked rather than assumed — the agent mentions plenty of image paths it
-   * never created (globs, README references, files it only read about).
-   */
-  private async relayImages(text: string) {
-    for (const path of extractImagePaths(text)) {
-      if (this.sentImages.has(path)) continue;
-      if (!existsSync(path)) continue;
-
-      const stat = statSync(path);
-      // Stale files are not candidates: `ls` output mentions every old
-      // screenshot in the temp dir, and the dedupe set resets on restart, so
-      // an mtime check is the only thing keeping a listing from re-sending
-      // the lot.
-      if (Date.now() - stat.mtimeMs > config.imageMaxAgeMs) continue;
-
-      const bytes = stat.size;
-      this.sentImages.add(path);   // marked before sending, so a failure is not retried forever
-      if (bytes === 0) continue;
-      if (bytes > config.maxImageBytes) {
-        await this.send(`🖼 <code>${basename(path)}</code> is ${Math.round(bytes / 1e6)}MB — too large to send.`);
-        continue;
-      }
-      console.log('[relay] sending image:', path, bytes, 'bytes');
-      await this.sendImage(path, `🖼 ${basename(path)}`);
-    }
   }
 
   /** Broadcast to every allowlisted chat; returns the message id in the first one. */
@@ -567,7 +521,6 @@ export class Relay {
           }
           if (!s.parts.has(part.id)) s.order.push(part.id);
           s.parts.set(part.id, part.text);
-          await this.relayImages(part.text);
           this.schedule(p.sessionID);
         } else if (part.type === 'tool') {
           log.debug('relay', 'tool part:', part.tool, part.state?.status ?? '');
@@ -579,17 +532,6 @@ export class Relay {
           const s = this.state(p.sessionID);
           if (!s.parts.has(part.id)) s.order.push(part.id);
           s.parts.set(part.id, line);
-          // Scan the invocation as well as the result: `cua-driver call
-          // screenshot --screenshot-out-file <path>` prints only a one-line
-          // summary, so the path exists nowhere but the command itself.
-          if (part.state?.status === 'completed') {
-            const input = part.state.input ?? {};
-            await this.relayImages(
-              [input.command, input.filePath, input.path, part.state.output]
-                .filter(v => typeof v === 'string')
-                .join('\n'),
-            );
-          }
           this.schedule(p.sessionID);
         }
         return;

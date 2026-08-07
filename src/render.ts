@@ -46,23 +46,6 @@ export function renderTool(part: any): string | null {
 }
 
 /**
- * Absolute paths to images the agent produced. Deliberately path-based rather
- * than base64: `cua-driver call screenshot --screenshot-out-file` keeps the
- * pixels off the event stream entirely, so neither the model's context nor this
- * relay has to carry a megabyte of base64 to show you one picture.
- *
- * Trailing `)`, `"`, `'` and `,` are stripped because these paths usually turn
- * up inside prose, JSON, or markdown links rather than alone on a line.
- */
-const IMAGE_PATH = /\/[^\s"'`<>|]+\.(?:png|jpe?g)\b/gi;
-
-export function extractImagePaths(text: string): string[] {
-  // Drop URLs first, or `https://host/a.png` yields a bogus `//host/a.png`.
-  const found = text.replace(/\b[a-z]+:\/\/\S+/gi, ' ').match(IMAGE_PATH) ?? [];
-  return [...new Set(found.map(p => p.replace(/[)\]",'.]+$/, '')))];
-}
-
-/**
  * Split a chunk at the last newline before the limit so code blocks and lines
  * survive the cut where possible.
  */
