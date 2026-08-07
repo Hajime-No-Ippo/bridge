@@ -3,7 +3,7 @@ import { createBot, registerSend } from './bot';
 import { log, noteEvent } from './log';
 import { opencode } from './opencode';
 import { Relay } from './relay';
-import { sweepTempImages } from './tools/screenshot';
+import { sweepTempImages } from './back_slash_commands/screenshot';
 
 const controller = new AbortController();
 
@@ -75,6 +75,10 @@ async function main() {
   // A permission asked while the bridge was down would otherwise be
   // unanswerable forever, since its buttons died with the previous process.
   await relay.reconcilePermissions();
+  await relay.reconcileQuestions();
+  // And from here on, keep watching them: expire the ones nobody answers, drop
+  // the ones settled in the TUI, and nudge while a turn is still held up.
+  relay.startPendingSweeper(controller.signal);
   // bot.start() only resolves when polling stops, and it REJECTS on a transport
   // failure. grammy's bot.catch() does not cover this — that handles middleware
   // errors, not the getUpdates loop itself. Left unhandled it takes the process

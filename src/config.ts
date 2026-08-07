@@ -49,6 +49,15 @@ export const config = {
   // says so. Generous: a cold model can take a while to emit its first part,
   // and a false alarm is worse than a slightly late one.
   silenceWarnMs: Number(env('SILENCE_WARN_MS', '20000')),
+  // A permission or question BLOCKS the turn until it is answered, and nothing
+  // on the opencode side ever expires one. Without a ceiling here, a prompt
+  // nobody tapped wedges the session for as long as the bridge stays up — which
+  // is indistinguishable, from the phone, from the bridge being dead.
+  pendingTtlMs: Number(env('PENDING_TTL_MS', String(30 * 60 * 1000))),
+  // How long a block may sit before the bridge says so again. The message
+  // carrying the buttons scrolls off a phone screen within a few exchanges, so
+  // the reminder is often the only way to find out the turn is still waiting.
+  pendingNudgeMs: Number(env('PENDING_NUDGE_MS', String(5 * 60 * 1000))),
   // Cap on an inbound attachment. Base64 inflates the payload by ~33% and the
   // whole thing rides inside the prompt body, so this sits well under
   // Telegram's own 20MB ceiling for serving files to bots.

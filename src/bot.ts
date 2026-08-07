@@ -4,10 +4,10 @@ import { classifyReaction, FALLBACK_EMOJI } from './classify';
 import { activity, log } from './log';
 import { fetchAttachment } from './attachments';
 import { OpencodeHttpError, opencode, type PromptPart } from './opencode';
-import { pendingPermissions, pendingQuestions, type Relay } from './relay';
+import { pendingPermissions, pendingQuestions, supersedeQuestions, type Relay } from './relay';
 import { registerRename } from './rename';
 import { registerModel } from './model';
-import { discard, takeScreenshot } from './tools/screenshot';
+import { discard, takeScreenshot } from './back_slash_commands/screenshot';
 
 // Single source of truth for the command list — /start and /help both send it,
 // so the two can never drift apart.
@@ -18,7 +18,7 @@ const HELP_TEXT =
   '/model <provider/model-id> — switch model of current session\n' +
   '/screenshot — capture the TUI window\n' +
   '/stop — abort the running session\n' +
-  '/whoami — your chat ID\n' +
+  '/whoami — your chat ID, what you are using\n' +
   '/help — this list\n' +
   '!cmd — run a shell command directly';
 
@@ -191,6 +191,18 @@ export function createBot(): Bot {
         await ctx.answerCallbackQuery(`Answered: ${label}`);
         await ctx.editMessageReplyMarkup({ reply_markup: undefined });
       } catch (err) {
+        // Mirrors the permission branch above: the question was already settled
+        // — answered in the TUI, or superseded by a prompt sent since. Retire
+        // the buttons quietly rather than reporting a failure that names
+        // nothing the user can do about it.
+        if (err instanceof OpencodeHttpError && err.isQuestionGone) {
+          pendingQuestions.delete(String(token));
+          log.info('question', `${requestID} was already resolved — retiring buttons`);
+          await ctx.answerCallbackQuery('Already handled');
+          await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => { });
+          return;
+        }
+        log.error('question', 'answer failed:', (err as Error).message);
         await ctx.answerCallbackQuery('Failed');
         await ctx.reply(`Answer failed: ${(err as Error).message}`);
       }
@@ -214,6 +226,27 @@ export function createBot(): Bot {
     opts: { classifyOn?: string; label: string },
   ): Promise<void> {
     try {
+      // A question BLOCKS the turn and only its buttons can answer it, so a new
+      // prompt sent while one is outstanding used to queue behind a block this
+      // message could never clear — the session simply went quiet. Sending
+      // anything at all is the user moving on, so retire the question first.
+      const dropped = await supersedeQuestions(bot);
+      if (dropped) {
+        await ctx.reply(
+          `❓ ${dropped === 1 ? 'An unanswered question was' : `${dropped} unanswered questions were`} ` +
+          'dismissed — your message goes in as a new prompt instead.',
+        );
+      }
+      // Permissions are NOT dismissed the same way: a typed message must never
+      // stand in for Approve/Deny. All the bridge can do is say why the turn is
+      // still stuck, so the block is visible instead of silent.
+      if (pendingPermissions.size > 0) {
+        await ctx.reply(
+          `🔐 ${pendingPermissions.size} permission request(s) still waiting — the turn stays ` +
+          'blocked until you tap Once / Always / Deny.',
+        );
+      }
+
       // Resolve the session BEFORE classification starts. classify opens a real
       // opencode session and only registers it as internal on the NEXT line, so
       // running the two concurrently can catch that gap and hand us the

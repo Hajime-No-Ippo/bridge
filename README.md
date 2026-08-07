@@ -36,6 +36,19 @@ user units; `make logs` tails them. (`OPENCODE_DIR` = the repo you work on, not 
 Permission requests → **Once / Always / Deny** buttons; questions → option buttons.
 Answering them is what makes remote driving work.
 
+Both block the turn until answered, so the bridge never lets one sit forever:
+
+- Sending a new prompt **supersedes** any unanswered question — it is rejected and
+  the turn is released, so typing the answer instead of tapping no longer wedges
+  the session. Permissions are exempt: a typed message must never stand in for
+  Approve/Deny.
+- Anything still pending after `PENDING_TTL_MS` is rejected and its buttons
+  retired, with a reminder every `PENDING_NUDGE_MS` until then.
+- A block answered in the TUI is dropped on the next sweep (`GET /permission` and
+  `GET /question` are the authority), and a turn that errors clears whatever it
+  was blocked on. Both lists are also re-read at startup, so a restart cannot
+  orphan a block the server is still waiting on.
+
 ## Notes
 
 - Streaming: cumulative part text + debounced `editMessageText` (≈1/s), split past
@@ -45,7 +58,8 @@ Answering them is what makes remote driving work.
   the agent's own `screenshot` skill produces. Sent as documents, deduped, mtime-capped.
 - Config: `TELEGRAM_ALLOWED_CHAT_IDS`, `OPENCODE_URL`, `OPENCODE_SERVER_PASSWORD`,
   `EDIT_INTERVAL_MS`, `MAX_INBOUND_BYTES`, `MAX_IMAGE_BYTES`, `IMAGE_MAX_AGE_MS`,
-  `TEMP_IMAGE_TTL_MS`, `SILENCE_WARN_MS` (see `.env.example`).
+  `TEMP_IMAGE_TTL_MS`, `SILENCE_WARN_MS`, `PENDING_TTL_MS`, `PENDING_NUDGE_MS`
+  (see `.env.example`).
 - Vision/PDF: a model only accepts a photo or PDF if it advertises that input
   capability. The default `opencode` free tier and deepseek/moonshotai are
   text-only for PDFs. `make opencode-config` installs a provider config
@@ -64,3 +78,5 @@ the server on `127.0.0.1`, caps inbound files at 8MB. `.env` is gitignored.
   allowlisted chats, edits track the first chat only.
 - Browser operation helpers now exist under `src/tools/operate_*.ts`, but they are
   low-level wrappers (not yet wired to Telegram commands).
+- Prompts submitted while a turn is blocked are recorded by opencode but never
+  run, and releasing the block does not replay them. Re-send after answering.

@@ -17,7 +17,7 @@ The two hardest blockers hit on macOS simply do not exist on X11:
 ## 2. Existing state
 
 - `main` / `linux-screenshot` branch already carries Linux screenshot
-  support: `src/tools/screenshot.ts` (X11 `xdotool` + ImageMagick
+  support: `src/back_slash_commands/screenshot.ts` (X11 `xdotool` + ImageMagick
   `import`, Wayland `grim`). See commit d917788.
 - `browser_ops.ts` is still macOS-bound: it drives Chrome via cua-driver
   (Apple Events `execute javascript`, per-pid window scoring).
@@ -35,7 +35,7 @@ The two hardest blockers hit on macOS simply do not exist on X11:
 | Window capture         | ScreenCaptureKit                   | import -window (or maim/scrot)   |
 | Accessibility tree     | AppKit AX (System Settings broken) | AT-SPI2 (GTK good, else patchy)  |
 | Hidden launch          | launch_app + FocusRestoreGuard     | direct spawn (setsid nohup)      |
-| Screenshot             | cua-driver screenshot              | src/tools/screenshot.ts (done)   |
+| Screenshot             | cua-driver screenshot              | back_slash_commands/screenshot   |
 | Bluetooth              | blueutil (TCC dead end)            | bluetoothctl (no gate)           |
 | Audio output verify    | system_profiler SPAudio            | pactl list sinks short           |
 

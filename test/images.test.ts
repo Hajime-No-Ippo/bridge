@@ -9,7 +9,7 @@ process.env.TELEGRAM_BOT_TOKEN = 'test-token';
 process.env.TELEGRAM_ALLOWED_CHAT_IDS = '111';
 
 const { Relay } = await import('../src/relay');
-const { sweepTempImages } = await import('../src/tools/screenshot');
+const { sweepTempImages } = await import('../src/back_slash_commands/screenshot');
 
 const HOUR = 60 * 60 * 1000;
 

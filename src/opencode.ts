@@ -48,6 +48,18 @@ export interface PendingPermission {
   resources?: string[];
 }
 
+/**
+ * An outstanding question, as returned by GET /question.
+ *
+ * The endpoint is the counterpart to GET /permission and carries the same
+ * `{id, sessionID}` shape, plus the option list under `questions`.
+ */
+export interface PendingQuestionRequest {
+  id: string;
+  sessionID: string;
+  questions?: any[];
+}
+
 function authHeaders(): Record<string, string> {
   if (!config.auth) return {};
   const raw = `${config.auth.username}:${config.auth.password}`;
@@ -80,6 +92,19 @@ export class OpencodeHttpError extends Error {
    */
   get isPermissionGone(): boolean {
     return this.status === 404 && this.body.includes('PermissionNotFoundError');
+  }
+
+  /**
+   * The question no longer exists: answered in the TUI, rejected because a new
+   * prompt superseded it, or discarded when the turn ended.
+   *
+   * Unlike permissions there is no verified error-name string to match on, and
+   * `/question/{id}/reply` has no legacy route to fall back to — so any 404 from
+   * it is read as gone. A genuine routing bug would land here too, which is why
+   * callers log the hit instead of swallowing it.
+   */
+  get isQuestionGone(): boolean {
+    return this.status === 404;
   }
 }
 
@@ -175,6 +200,16 @@ export const opencode = {
    * longer exist, and a blocked session can never be answered again.
    */
   listPermissions: () => request<PendingPermission[]>('/permission'),
+
+  /**
+   * Questions the server is still blocked on.
+   *
+   * Exists for the same reason as listPermissions: the bridge's own map of
+   * what is pending is in-memory, so a restart loses it — and a question the
+   * bridge cannot see is one nothing can expire, supersede, or answer, which
+   * blocks the session permanently.
+   */
+  listQuestions: () => request<PendingQuestionRequest[]>('/question'),
 
   showToast: (message: string, variant: 'info' | 'success' | 'warning' | 'error' = 'info') =>
     post<boolean>('/tui/show-toast', { message, variant }),

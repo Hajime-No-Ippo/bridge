@@ -87,7 +87,12 @@ describe('restart reconciliation', () => {
 
   test('does not double-post one it can already answer', async () => {
     const sent: Sent[] = [];
-    pendingPermissions.set('9', { requestID: PERMISSION.id, sessionID: PERMISSION.sessionID });
+    pendingPermissions.set('9', {
+      requestID: PERMISSION.id,
+      sessionID: PERMISSION.sessionID,
+      askedAt: Date.now(),
+      nudgedAt: Date.now(),
+    });
     stub([PERMISSION]);
     try {
       expect(await new Relay(fakeBot(sent)).reconcilePermissions()).toBe(0);

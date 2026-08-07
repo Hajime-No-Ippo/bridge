@@ -23,6 +23,17 @@ interface TurnState {
 
 const chats = () => [...config.allowedChatIds];
 
+/**
+ * How often to re-examine what the turn is blocked on.
+ *
+ * Deliberately far shorter than either threshold it enforces — it decides only
+ * how late an expiry or a nudge can be. A sweep with nothing to do costs one
+ * `GET /permission` against localhost.
+ */
+const PENDING_SWEEP_MS = 30_000;
+
+const minutes = (ms: number) => `${Math.round(ms / 60_000)} min`;
+
 /** The role a directory plays, as named in a test case. */
 export type DirLabel = 'HOME_DIR' | 'PROJECT_DIR' | 'WRONG_DIR' | 'USER_DIR';
 
@@ -311,10 +322,20 @@ export class Relay {
         if (tracked.has(p.id)) continue;   // already answerable — do not double-post
 
         const token = nextToken();
-        pendingPermissions.set(token, { requestID: p.id, sessionID: p.sessionID });
+        const entry: PendingBase = {
+          requestID: p.id,
+          sessionID: p.sessionID,
+          // The server has been blocked on this since before the restart, but
+          // how long is not in the pending list. Dating it from the restart is
+          // the conservative read: it gives the user the full TTL to answer
+          // rather than expiring a freshly re-posted button on arrival.
+          askedAt: Date.now(),
+          nudgedAt: Date.now(),
+        };
+        pendingPermissions.set(token, entry);
         const action = p.permission ?? p.action ?? 'unknown action';
         const detail = (p.patterns ?? p.resources ?? []).slice(0, 4).join('\n');
-        await this.send(
+        entry.messageId = await this.send(
           `🔐 <b>Permission still pending</b> (restored after restart)\n` +
           `<code>${action}</code>${detail ? `\n${detail}` : ''}`,
           permissionKeyboard(token),
@@ -326,6 +347,184 @@ export class Relay {
       log.warn('reconcile', `could not restore pending permissions: ${(err as Error).message}`);
     }
     return restored;
+  }
+
+  /**
+   * Re-post buttons for questions the server is still waiting on.
+   *
+   * The incident this exists for, in full: a question was asked, the bridge
+   * restarted, and `pendingQuestions` came back empty. The buttons already in
+   * the chat carried tokens that no longer resolved to anything, the supersede
+   * gate saw an empty map and so released nothing, and the sweep had no entry
+   * to expire. The turn stayed blocked, and every prompt sent afterwards was
+   * recorded and then silently never run — three in a row, with no reply and
+   * nothing in the chat to explain it.
+   *
+   * `GET /question` is what makes this recoverable, exactly as `GET /permission`
+   * does for the other half. Never throws, for the same reason.
+   */
+  async reconcileQuestions(): Promise<number> {
+    let restored = 0;
+    try {
+      const pending = await opencode.listQuestions();
+      if (!Array.isArray(pending) || pending.length === 0) {
+        log.info('reconcile', 'no questions were left pending');
+        return 0;
+      }
+
+      const tracked = new Set([...pendingQuestions.values()].map(q => q.requestID));
+      for (const item of pending) {
+        if (!item?.id) continue;
+        if (item.sessionID && internalSessions.has(item.sessionID)) continue;
+        if (tracked.has(item.id)) continue;   // already answerable — do not double-post
+        const q = item.questions?.[0];
+        if (!q) continue;
+
+        const token = nextToken();
+        const entry = {
+          requestID: item.id,
+          sessionID: item.sessionID ?? '',
+          question: q,
+          askedAt: Date.now(),
+          nudgedAt: Date.now(),
+          messageId: undefined as number | undefined,
+        };
+        pendingQuestions.set(token, entry);
+        entry.messageId = await this.send(
+          `❓ <b>${q.header ?? 'Question'}</b> (restored after restart)\n${q.question ?? ''}`,
+          questionKeyboard(token, q),
+        );
+        restored++;
+      }
+      log.info('reconcile', `restored ${restored} pending question(s)`);
+    } catch (err) {
+      log.warn('reconcile', `could not restore pending questions: ${(err as Error).message}`);
+    }
+    return restored;
+  }
+
+  /**
+   * Forget everything a dead session was blocked on.
+   *
+   * Called only from `session.error`, never from `session.idle`. A turn that
+   * errored can no longer consume an answer, so clearing is safe. Idle is not:
+   * whether opencode reports idle *while* waiting on a permission is not
+   * settled, and clearing on a wrong guess would revoke a button the user is
+   * about to press — strictly worse than the leak it would fix. The sweep below
+   * catches the idle case authoritatively instead.
+   */
+  private async clearPendingFor(sessionID: string): Promise<void> {
+    for (const [token, p] of [...pendingPermissions]) {
+      if (p.sessionID !== sessionID) continue;
+      pendingPermissions.delete(token);
+      await retireButtons(this.bot, p.messageId);
+    }
+    for (const [token, q] of [...pendingQuestions]) {
+      if (q.sessionID !== sessionID) continue;
+      pendingQuestions.delete(token);
+      await retireButtons(this.bot, q.messageId);
+    }
+  }
+
+  /**
+   * Age out blocks nobody answered, and say so.
+   *
+   * Three passes, ordered so each shrinks the work of the next:
+   *
+   * 1. Drop permissions the server no longer lists. `GET /permission` is the
+   *    authority — one answered in the TUI, or satisfied by a saved `always`
+   *    rule, otherwise leaves the bridge's copy behind with live buttons. This
+   *    is `reconcilePermissions` run in reverse.
+   * 2. Expire anything past `pendingTtlMs`, *actively rejecting it* so the turn
+   *    unblocks server-side and not merely in the chat. Forgetting a block
+   *    locally would be the original bug with extra steps.
+   * 3. Nudge whatever is still waiting, because the message holding the buttons
+   *    scrolled off the phone several exchanges ago.
+   *
+   * Pass 1 runs against both `GET /permission` and `GET /question`, so a block
+   * settled in the TUI is noticed within a sweep rather than lingering until
+   * the TTL.
+   */
+  private async sweepPending(): Promise<void> {
+    const now = Date.now();
+
+    try {
+      const live = new Set((await opencode.listPermissions()).map(p => p.id));
+      for (const [token, p] of [...pendingPermissions]) {
+        if (live.has(p.requestID)) continue;
+        pendingPermissions.delete(token);
+        log.info('pending', `permission ${p.requestID} resolved elsewhere — retiring buttons`);
+        await retireButtons(this.bot, p.messageId);
+      }
+    } catch (err) {
+      // Server unreachable. Leaving the entries alone is the right call: they
+      // may well still be live, and the TTL below is the backstop regardless.
+      log.debug('pending', `permission reconcile skipped: ${(err as Error).message}`);
+    }
+
+    try {
+      const live = new Set((await opencode.listQuestions()).map(q => q.id));
+      for (const [token, q] of [...pendingQuestions]) {
+        if (live.has(q.requestID)) continue;
+        pendingQuestions.delete(token);
+        log.info('pending', `question ${q.requestID} resolved elsewhere — retiring buttons`);
+        await retireButtons(this.bot, q.messageId);
+      }
+    } catch (err) {
+      log.debug('pending', `question reconcile skipped: ${(err as Error).message}`);
+    }
+
+    for (const [token, p] of [...pendingPermissions]) {
+      if (now - p.askedAt < config.pendingTtlMs) continue;
+      pendingPermissions.delete(token);
+      try {
+        await opencode.replyPermission(p.requestID, p.sessionID, 'reject');
+      } catch (err) {
+        log.debug('pending', `expiring ${p.requestID} failed: ${(err as Error).message}`);
+      }
+      await retireButtons(this.bot, p.messageId);
+      await this.send(
+        `⏳ <b>Permission expired</b>\nUnanswered for ${minutes(config.pendingTtlMs)}, ` +
+        `so it was denied and the turn released.`,
+      );
+    }
+
+    for (const [token, q] of [...pendingQuestions]) {
+      if (now - q.askedAt < config.pendingTtlMs) continue;
+      pendingQuestions.delete(token);
+      try {
+        await opencode.rejectQuestion(q.requestID);
+      } catch (err) {
+        log.debug('pending', `expiring ${q.requestID} failed: ${(err as Error).message}`);
+      }
+      await retireButtons(this.bot, q.messageId);
+      await this.send(
+        `⏳ <b>Question expired</b>\nUnanswered for ${minutes(config.pendingTtlMs)}, ` +
+        `so the turn was released. Send your answer as a normal message to carry on.`,
+      );
+    }
+
+    // Whatever survived both passes is genuinely still holding the turn.
+    const due = [...pendingPermissions.values(), ...pendingQuestions.values()]
+      .filter(e => now - e.nudgedAt >= config.pendingNudgeMs);
+    if (due.length === 0) return;
+    for (const e of due) e.nudgedAt = now;
+    await this.send(
+      `⏳ <b>Still waiting on you</b>\n` +
+      `${pendingPermissions.size} permission(s), ${pendingQuestions.size} question(s) — ` +
+      `the turn stays blocked until they are answered.\n` +
+      `A permission needs a button. A question also clears itself if you just send your next prompt.`,
+    );
+  }
+
+  /** Run the sweep for the life of the process; stops with the abort signal. */
+  startPendingSweeper(signal: AbortSignal): void {
+    const id = setInterval(() => {
+      void this.sweepPending().catch(err =>
+        log.warn('pending', `sweep failed: ${(err as Error).message}`),
+      );
+    }, PENDING_SWEEP_MS);
+    signal.addEventListener('abort', () => clearInterval(id));
   }
 
   async handle(event: OpencodeEvent) {
@@ -410,7 +609,12 @@ export class Relay {
       case 'session.error': {
         const msg = p.error?.data?.message ?? p.error?.name ?? 'unknown error';
         await this.send(`⚠️ <b>Session error</b>\n${msg}`);
-        if (p.sessionID) this.finish(p.sessionID);
+        if (p.sessionID) {
+          this.finish(p.sessionID);
+          // Nothing can answer a block on a turn that just died, and its
+          // buttons would otherwise sit in the chat looking actionable.
+          await this.clearPendingFor(p.sessionID);
+        }
         return;
       }
 
@@ -432,9 +636,17 @@ export class Relay {
         // message failed with BUTTON_DATA_INVALID and the turn hung forever with
         // no way to approve it. Keep the ids here, put a short token in the button.
         const token = nextToken();
-        pendingPermissions.set(token, { requestID: p.id, sessionID: p.sessionID });
+        const entry: PendingBase = {
+          requestID: p.id,
+          sessionID: p.sessionID,
+          askedAt: Date.now(),
+          nudgedAt: Date.now(),
+        };
+        pendingPermissions.set(token, entry);
         const keyboard = permissionKeyboard(token);
-        await this.send(
+        // Recorded before the send resolves so a press that arrives while the
+        // API call is still in flight already finds the entry.
+        entry.messageId = await this.send(
           `🔐 <b>Permission requested</b>\n<code>${action}</code>${detail ? `\n${detail}` : ''}`,
           keyboard,
         );
@@ -446,14 +658,22 @@ export class Relay {
         const questions = p.questions ?? [];
         const q = questions[0];
         if (!q) return;
-        const keyboard = new InlineKeyboard();
         const qToken = nextToken();
-        (q.options ?? []).slice(0, 6).forEach((opt: any, i: number) => {
-          keyboard.text(String(opt.label ?? opt).slice(0, 30), cb(`ask|${qToken}|${i}`)).row();
-        });
-        pendingQuestions.set(qToken, { requestID: p.id, question: q });
+        const keyboard = questionKeyboard(qToken, q);
+        const qEntry = {
+          requestID: p.id,
+          sessionID: p.sessionID ?? '',
+          question: q,
+          askedAt: Date.now(),
+          nudgedAt: Date.now(),
+          messageId: undefined as number | undefined,
+        };
+        pendingQuestions.set(qToken, qEntry);
         log.info('relay', 'question asked — turn is blocked until answered');
-        await this.send(`❓ <b>${q.header ?? 'Question'}</b>\n${q.question ?? ''}`, keyboard);
+        qEntry.messageId = await this.send(
+          `❓ <b>${q.header ?? 'Question'}</b>\n${q.question ?? ''}`,
+          keyboard,
+        );
         return;
       }
 
@@ -466,8 +686,29 @@ export class Relay {
   }
 }
 
+/**
+ * What every block the turn is waiting on has to carry.
+ *
+ * The first three fields exist because none of them could be recovered later.
+ * Without `sessionID` a question cannot be cleared when its session dies —
+ * the map held only the request and the options, so there was no way to ask
+ * "does this still belong to anything". Without `askedAt` nothing can expire.
+ * Without `messageId` the buttons cannot be retired, so a resolved block keeps
+ * a live-looking keyboard in the chat forever.
+ */
+interface PendingBase {
+  requestID: string;
+  sessionID: string;
+  /** Epoch ms the block started. TTL expiry and nudge cadence both read this. */
+  askedAt: number;
+  /** Epoch ms of the last reminder, so a nudge does not repeat every sweep. */
+  nudgedAt: number;
+  /** Telegram message carrying the buttons, so they can be stripped. */
+  messageId?: number;
+}
+
 /** Question options, kept so a button press can be mapped back to its label. */
-export const pendingQuestions = new Map<string, any>();
+export const pendingQuestions = new Map<string, PendingBase & { question: any }>();
 
 /**
  * Permission requests, kept so a button press can be mapped back to its request.
@@ -475,7 +716,61 @@ export const pendingQuestions = new Map<string, any>();
  * The ids live here rather than in the button because Telegram allows only 64
  * bytes of callback_data — see CALLBACK_DATA_LIMIT.
  */
-export const pendingPermissions = new Map<string, { requestID: string; sessionID: string }>();
+export const pendingPermissions = new Map<string, PendingBase>();
+
+/**
+ * Strip the buttons off a prompt that can no longer be answered.
+ *
+ * Leaving them is what turns a resolved block into a confusing one: the
+ * keyboard still looks actionable, and pressing it reports a failure the user
+ * can do nothing about.
+ *
+ * Mirrors `edit()` in scope — the id came from the first allowlisted chat, so
+ * on a multi-chat allowlist the other attempts fail and are ignored. Same known
+ * gap, tracked in the README.
+ */
+export async function retireButtons(bot: Bot, messageId?: number): Promise<void> {
+  if (messageId === undefined) return;
+  for (const chatId of chats()) {
+    try {
+      await bot.api.editMessageReplyMarkup(chatId, messageId, { reply_markup: undefined });
+    } catch {
+      // Already edited, deleted, or another chat's id. Nothing to report.
+    }
+  }
+}
+
+/**
+ * Drop every outstanding question because a new prompt is taking over.
+ *
+ * A question BLOCKS the turn and only its buttons can answer it. Typing the
+ * answer instead of tapping — which is what anyone does once the option list
+ * has scrolled off a phone screen — used to submit the text as a fresh prompt
+ * and leave the block standing, so the session went quiet and stayed quiet with
+ * nothing in the chat to say why. Reading a new prompt as "the user moved on"
+ * and rejecting the question is what keeps the session live.
+ *
+ * Permissions are deliberately NOT superseded. Silently dropping an
+ * Approve/Deny because someone typed would turn an ordinary message into a
+ * security decision; those stay button-only until answered or expired.
+ */
+export async function supersedeQuestions(bot: Bot): Promise<number> {
+  if (pendingQuestions.size === 0) return 0;
+  const entries = [...pendingQuestions.values()];
+  pendingQuestions.clear();   // cleared first: a reject that throws must not leave the block tracked
+  for (const q of entries) {
+    try {
+      await opencode.rejectQuestion(q.requestID);
+    } catch (err) {
+      // Already gone is the ordinary case here, and nothing else is worth
+      // failing the user's new prompt over.
+      log.debug('pending', `reject ${q.requestID} failed: ${(err as Error).message}`);
+    }
+    await retireButtons(bot, q.messageId);
+  }
+  log.info('pending', `superseded ${entries.length} unanswered question(s) — new prompt takes over`);
+  return entries.length;
+}
 
 let tokenSeq = 0;
 /** Short, unique-per-run handle for a pending interaction. */
@@ -493,6 +788,21 @@ export const CALLBACK_DATA_LIMIT = 64;
  * need it, and two copies would be free to drift — which matters because a
  * malformed button here silently kills the entire message.
  */
+/**
+ * The option keyboard for a question, built in exactly one place.
+ *
+ * Same reason as permissionKeyboard: the live `question.asked` path and the
+ * restart-reconciliation path both need it, and two copies would be free to
+ * drift in the one detail that silently kills the whole message — button size.
+ */
+export function questionKeyboard(token: string, q: any): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  (q?.options ?? []).slice(0, 6).forEach((opt: any, i: number) => {
+    keyboard.text(String(opt.label ?? opt).slice(0, 30), cb(`ask|${token}|${i}`)).row();
+  });
+  return keyboard;
+}
+
 export function permissionKeyboard(token: string): InlineKeyboard {
   return new InlineKeyboard()
     .text('✅ Once', cb(`perm|once|${token}`))
