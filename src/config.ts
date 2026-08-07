@@ -62,6 +62,12 @@ export const config = {
   // whole thing rides inside the prompt body, so this sits well under
   // Telegram's own 20MB ceiling for serving files to bots.
   maxInboundBytes: Number(env('MAX_INBOUND_BYTES', String(8 * 1024 * 1024))),
+  // Force-block attachment modalities for models whose advertised capability is
+  // wrong. Entries are `provider/model:modality`, comma separated. The guard in
+  // src/vision.ts already refuses anything a model declares it cannot take;
+  // this covers the opposite case — a model that claims it can and then rejects
+  // the request, which is unfixable from the catalogue side.
+  attachmentDeny: env('ATTACHMENT_DENY', ''),
 };
 
 export type Config = typeof config;

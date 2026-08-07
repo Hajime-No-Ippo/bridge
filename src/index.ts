@@ -4,6 +4,7 @@ import { log, noteEvent } from './log';
 import { opencode } from './opencode';
 import { Relay } from './relay';
 import { sweepTempImages } from './back_slash_commands/screenshot';
+import { claimPollingSlot, releasePollingSlot } from './poller_lock';
 
 const controller = new AbortController();
 
@@ -61,6 +62,7 @@ async function main() {
   const shutdown = async () => {
     controller.abort();
     await bot.stop();
+    releasePollingSlot(config.botToken);
     process.exit(0);
   };
   process.once('SIGINT', shutdown);
@@ -79,6 +81,10 @@ async function main() {
   // And from here on, keep watching them: expire the ones nobody answers, drop
   // the ones settled in the TUI, and nudge while a turn is still held up.
   relay.startPendingSweeper(controller.signal);
+  // Claimed as late as possible, and deliberately AFTER the opencode health
+  // check: evicting a working bridge and then exiting because opencode is down
+  // would take the chat offline to accomplish nothing.
+  await claimPollingSlot(config.botToken);
   // bot.start() only resolves when polling stops, and it REJECTS on a transport
   // failure. grammy's bot.catch() does not cover this — that handles middleware
   // errors, not the getUpdates loop itself. Left unhandled it takes the process
@@ -92,7 +98,9 @@ async function main() {
         'bot',
         'Telegram 409: another process is already polling this bot token.\n' +
         '  Telegram allows exactly one getUpdates consumer per token.\n' +
-        '  Find the other instance:  pgrep -fl src/index.ts\n' +
+        '  The startup takeover did not clear it, so the holder is either not a\n' +
+        '  bridge, ignoring SIGTERM, or running under a different pidfile.\n' +
+        '  Find it:  pgrep -fl src/index.ts\n' +
         '  Then kill it, or give this one a different TELEGRAM_BOT_TOKEN.',
       );
     } else {

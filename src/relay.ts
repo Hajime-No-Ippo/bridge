@@ -8,6 +8,7 @@ import { log, noteWorking } from './log';
 import { internalSessions, opencode, type OpencodeEvent } from './opencode';
 import { TG_LIMIT, extractImagePaths, renderTool, splitAt, toTelegramHtml } from './render';
 import { TaskKind } from './classify';
+import { explainAttachmentRejection } from './vision';
 
 interface TurnState {
   order: string[];
@@ -608,7 +609,11 @@ export class Relay {
 
       case 'session.error': {
         const msg = p.error?.data?.message ?? p.error?.name ?? 'unknown error';
-        await this.send(`⚠️ <b>Session error</b>\n${msg}`);
+        // A raw serde complaint names a message index and a variant name, and
+        // connects to nothing the user did. If it is really the attachment
+        // problem, say which one it is and how to get out of it.
+        const hint = explainAttachmentRejection(String(msg));
+        await this.send(`⚠️ <b>Session error</b>\n${msg}${hint ? `\n\n${hint}` : ''}`);
         if (p.sessionID) {
           this.finish(p.sessionID);
           // Nothing can answer a block on a turn that just died, and its

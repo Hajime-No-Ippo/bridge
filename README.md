@@ -28,6 +28,7 @@ user units; `make logs` tails them. (`OPENCODE_DIR` = the repo you work on, not 
 | text | submitted as a prompt |
 | photo / file | attached to the prompt (caption is the instruction) |
 | `/model <id>` · `/models` | switch / list models || `/rename <title>` | rename current session |
+| `/new [title]` | start a fresh session; prompts go there, current model carried over |
 | `/stop` | abort current session |
 | `/screenshot` | capture the TUI window |
 | `!cmd` | run a shell command directly |
@@ -61,11 +62,22 @@ Both block the turn until answered, so the bridge never lets one sit forever:
   `TEMP_IMAGE_TTL_MS`, `SILENCE_WARN_MS`, `PENDING_TTL_MS`, `PENDING_NUDGE_MS`
   (see `.env.example`).
 - Vision/PDF: a model only accepts a photo or PDF if it advertises that input
-  capability. The default `opencode` free tier and deepseek/moonshotai are
+  capability, and the bridge now checks before submitting — an attachment is
+  inlined into the session history permanently, so one incompatible file makes
+  *every* later prompt in that session fail. A declared `input.<kind>: false`
+  blocks; a declared `true` is only a hint, so `ATTACHMENT_DENY` can override a
+  model that claims a modality and then rejects it. The default `opencode` free tier and deepseek/moonshotai are
   text-only for PDFs. `make opencode-config` installs a provider config
   (deploy/opencode.example.json) that adds OpenAI (gpt-5.3-codex, gpt-4o) and
   Anthropic (claude-sonnet/opus) to the `/model` list — both read images and
   PDFs. It never overwrites an existing `~/.config/opencode/opencode.json`.
+
+- Polling slot: Telegram permits one `getUpdates` consumer per token, so an
+  orphaned bridge wedges every later start with 409. On startup the bridge
+  SIGTERMs the previous holder and takes over. The pidfile is keyed by a hash of
+  the token, so two bots never evict each other, and the holder's command line is
+  checked before signalling — a recycled pid belonging to something else is left
+  alone (`BRIDGE_PID_FILE` overrides the location).
 
 ## Security
 
@@ -78,5 +90,9 @@ the server on `127.0.0.1`, caps inbound files at 8MB. `.env` is gitignored.
   allowlisted chats, edits track the first chat only.
 - Browser operation helpers now exist under `src/tools/operate_*.ts`, but they are
   low-level wrappers (not yet wired to Telegram commands).
+- Linux migration phase 1 (`src/ubuntu24/`) provides a CDP browser backend behind
+  the same four-function seam, verified against real Chrome. The `operate_*.ts`
+  tools still import the macOS cua-driver path directly — switching them over
+  means adding `await`, since CDP is async where `execFileSync` was not.
 - Prompts submitted while a turn is blocked are recorded by opencode but never
   run, and releasing the block does not replay them. Re-send after answering.

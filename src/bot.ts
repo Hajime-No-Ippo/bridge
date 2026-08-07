@@ -7,13 +7,19 @@ import { OpencodeHttpError, opencode, type PromptPart } from './opencode';
 import { pendingPermissions, pendingQuestions, supersedeQuestions, type Relay } from './relay';
 import { registerRename } from './rename';
 import { registerModel } from './model';
+import { registerNew } from './new_session';
 import { discard, takeScreenshot } from './back_slash_commands/screenshot';
+import { checkAttachment, parseDeny } from './vision';
+
+/** Parsed once — ATTACHMENT_DENY cannot change without a restart anyway. */
+const denyList = parseDeny(config.attachmentDeny);
 
 // Single source of truth for the command list — /start and /help both send it,
 // so the two can never drift apart.
 const HELP_TEXT =
   '/status — server health and sessions\n' +
   '/sessions — list recent sessions\n' +
+  '/new [title] — start a fresh session (keeps the current model)\n' +
   '/rename <title> — rename current session\n' +
   '/model <provider/model-id> — switch model of current session\n' +
   '/screenshot — capture the TUI window\n' +
@@ -136,6 +142,7 @@ export function createBot(): Bot {
 
   registerRename(bot);
   registerModel(bot);
+  registerNew(bot);
   bot.on('callback_query:data', async ctx => {
     const [kind, ...rest] = ctx.callbackQuery.data.split('|');
 
@@ -295,6 +302,19 @@ export function createBot(): Bot {
     const doc = ctx.message?.document;
     const photo = ctx.message?.photo?.at(-1);
     const caption = (ctx.message?.caption ?? '').trim();
+
+    // Checked BEFORE the download: an attachment the model cannot read poisons
+    // the session permanently once it is in the history, and there is no reason
+    // to pull 8MB over the wire only to refuse it.
+    const check = await checkAttachment(
+      doc?.mime_type ?? (photo ? 'image/jpeg' : undefined),
+      doc?.file_name,
+      denyList,
+    );
+    if (!check.allow) {
+      await ctx.reply(check.message!, { parse_mode: 'HTML' });
+      return;
+    }
 
     const got = await fetchAttachment(ctx, {
       fileId: doc?.file_id ?? photo!.file_id,

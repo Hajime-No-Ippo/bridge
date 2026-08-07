@@ -25,6 +25,18 @@ export interface ModelInfo {
   id: string;
   providerID: string;
   name?: string;
+  /**
+   * What the catalogue claims this model accepts.
+   *
+   * Present for config-defined providers, which arrive via `/provider`; absent
+   * for `/api/model` entries. Callers must treat "absent" and "false" as
+   * different answers — see src/vision.ts, where only an explicit `false` is
+   * allowed to block anything.
+   */
+  capabilities?: {
+    attachment?: boolean;
+    input?: Partial<Record<'text' | 'audio' | 'image' | 'video' | 'pdf', boolean>>;
+  };
 }
 
 /**
