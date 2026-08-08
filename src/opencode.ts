@@ -1,5 +1,6 @@
 import { config } from './config';
 import { log } from './log';
+import { readPinnedSession, writePinnedSession } from './session_pin';
 
 export interface OpencodeEvent {
   type: string;
@@ -149,6 +150,36 @@ export const internalSessions = new Set<string>();
 const patch = <T>(path: string, body?: unknown) =>
   request<T>(path, { method: 'PATCH', body: body === undefined ? undefined : JSON.stringify(body) });
 
+/**
+ * Model chosen via /model, per session. Applied to the next prompt.
+ *
+ * There is no server endpoint to switch a session's model on its own —
+ * `model` is only a field on `/session/{id}/message` and `/prompt_async`, and
+ * the server's `Session.model` is just whichever model the last message used.
+ * "Switching" the model is therefore client-side bookkeeping: remember it
+ * here, and attach it to every prompt sent to this session from then on.
+ */
+const modelOverrides = new Map<string, { providerID: string; id: string }>();
+
+/**
+ * The bridge's own session id, persisted across restarts. See session_pin.ts
+ * for why this replaces "whichever session was updated most recently."
+ */
+let pinned: string | undefined = readPinnedSession(config.botToken);
+
+function pin(sessionID: string): void {
+  pinned = sessionID;
+  writePinnedSession(config.botToken, sessionID);
+}
+
+/** The pinned session, or undefined if none is set or it no longer exists. */
+async function loadPinned(): Promise<SessionInfo | undefined> {
+  if (!pinned) return undefined;
+  const existing = await request<SessionInfo>(`/session/${pinned}`).catch(() => undefined);
+  if (!existing) pinned = undefined;
+  return existing;
+}
+
 export const opencode = {
   health: () => request<{ healthy: boolean }>('/api/health'),
 
@@ -180,10 +211,13 @@ export const opencode = {
    * attached client, and unlike `promptAndWait` it does not block the handler
    * for the whole turn.
    */
-  promptAsync: (sessionID: string, prompt: string | PromptPart[]) =>
-    post(`/session/${sessionID}/prompt_async`, {
+  promptAsync: (sessionID: string, prompt: string | PromptPart[]) => {
+    const model = modelOverrides.get(sessionID);
+    return post(`/session/${sessionID}/prompt_async`, {
       parts: typeof prompt === 'string' ? [{ type: 'text', text: prompt }] : prompt,
-    }),
+      ...(model ? { model: { providerID: model.providerID, modelID: model.id } } : {}),
+    });
+  },
 
   /** Execute a shell command in the session — sends as a prompt for the agent to run. */
   /**
@@ -197,10 +231,40 @@ export const opencode = {
   runShell: (sessionID: string, command: string, agent = 'build') =>
     post<{ info?: { id: string } }>(`/session/${sessionID}/shell`, { agent, command }),
 
-  /** Most recently updated session — what `!` and /stop act on. Internal bridge sessions don't count. */
-  async latestSession(): Promise<SessionInfo | undefined> {
-    const sessions = await request<SessionInfo[]>('/session');
-    return sessions.find(s => !internalSessions.has(s.id));
+  /**
+   * The bridge's own session, if one is pinned and still exists — undefined
+   * otherwise. Never creates one; use `currentSession()` when a session is
+   * actually needed.
+   */
+  pinnedSession: () => loadPinned(),
+
+  /**
+   * The bridge's own session — pinned by id, not "whichever session on the
+   * server was updated most recently."
+   *
+   * The server may be serving other clients too (an attached TUI, direct CLI
+   * use, anything else pointed at the same opencode instance), and their
+   * activity can easily be more recent than the bridge's own. Trusting
+   * "latest" meant a Telegram message could silently land in a stranger's
+   * conversation, with no way for the bridge to see the reply — it was never
+   * a party to that session's events. Pinning by id removes the ambiguity:
+   * this session is the bridge's own until `pinSession` says otherwise.
+   *
+   * Creates and pins a fresh session the first time this runs, and again if
+   * the pinned one has been deleted out from under it.
+   */
+  async currentSession(): Promise<SessionInfo> {
+    const existing = await loadPinned();
+    if (existing) return existing;
+    const created = await post<SessionInfo>('/session');
+    pin(created.id);
+    log.info('session', `pinned new session ${created.id}`);
+    return created;
+  },
+
+  /** Point the bridge at a different session from now on (used by /new). */
+  pinSession(sessionID: string): void {
+    pin(sessionID);
   },
 
   /**
@@ -274,16 +338,20 @@ export const opencode = {
   },
 
   /**
-   * Switch the model of a session. ModelRef requires exactly { providerID, id }.
+   * Record the model a session should use from its next prompt onward.
    *
-   * Accepts ANY pair and returns 204 — a nonexistent provider, a misspelled id
-   * and a wrong-case id are all "successful" here. The real check happens when
-   * the session next runs, surfacing a turn later as `session.error: Model not
+   * Accepts ANY pair — a nonexistent provider, a misspelled id and a
+   * wrong-case id are all accepted here. The real check happens when the
+   * session next runs, surfacing a turn later as `session.error: Model not
    * found`. So a caller must resolve the ref itself; this returning cleanly
    * means nothing at all.
    */
-  switchModel: (sessionID: string, providerID: string, modelID: string) =>
-    post(`/api/session/${sessionID}/model`, { model: { providerID, id: modelID } }),
+  setModel: (sessionID: string, providerID: string, id: string) => {
+    modelOverrides.set(sessionID, { providerID, id });
+  },
+
+  /** The model queued for a session's next prompt, if /model has set one. */
+  getModel: (sessionID: string) => modelOverrides.get(sessionID),
 
   createSession: () => post<SessionInfo>('/session'),
 

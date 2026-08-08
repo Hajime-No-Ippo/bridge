@@ -5,17 +5,18 @@ import { opencode } from './opencode';
 /**
  * /new [title] — start a fresh session and make it the one prompts go to.
  *
- * Until this existed there was no session boundary at all. `submitTurn` resolves
- * its target with `latestSession()`, which returns the most recently updated
- * session and only creates one when there are none — so every message from
- * Telegram appended to the same thread forever. That is how a session reached
- * 930 messages carrying five inlined attachments, and why one PDF the model
- * could not read broke every turn after it with no way out from the phone.
+ * Until this existed there was no session boundary at all. `submitTurn`
+ * resolved its target with whatever session the bridge was pinned to, and
+ * nothing ever moved that pin — so every message from Telegram appended to
+ * the same thread forever. That is how a session reached 930 messages
+ * carrying five inlined attachments, and why one PDF the model could not read
+ * broke every turn after it with no way out from the phone.
  *
- * The mechanism is deliberately indirect: this does not "select" anything,
- * because there is nothing to select into. Creating a session makes it the most
- * recently updated one, and `/session` is ordered newest-first, so the next
- * prompt lands here on its own. No new targeting state to keep in sync.
+ * Creating a session does NOT make it the target on its own — pinning is
+ * explicit state now (see session_pin.ts), precisely so the bridge can never
+ * again drift onto some other session just because it happened to be the
+ * most recently touched one. `pinSession` below is what actually moves the
+ * target; skipping it would leave /new creating sessions nothing ever uses.
  *
  * The model is carried over rather than left to the server default. Someone
  * typing /new is drawing a line under a task, not asking to be moved to a
@@ -26,9 +27,10 @@ export function registerNew(bot: Bot): void {
   bot.command('new', async ctx => {
     const title = (typeof ctx.match === 'string' ? ctx.match : '').trim();
 
-    // Read BEFORE creating: afterwards the new session is the latest one, and
-    // the model to inherit would be its own default rather than the old one's.
-    const previous = await opencode.latestSession().catch(() => undefined);
+    // Read BEFORE re-pinning: afterwards opencode.pinnedSession() would
+    // return the new session, and the model to inherit would be its own
+    // default rather than the old one's.
+    const previous = await opencode.pinnedSession();
 
     let session;
     try {
@@ -37,20 +39,20 @@ export function registerNew(bot: Bot): void {
       await ctx.reply(`Could not start a new session: ${(err as Error).message}`);
       return;
     }
+    opencode.pinSession(session.id);
 
     // Everything past this point is best-effort. The session exists and is
     // already the target, so a failure here is cosmetic — reporting it as a
     // failed command would be worse than a session with a default title.
     const notes: string[] = [];
 
-    const model = previous?.model;
+    // Prefer a /model queued on the old session over its last actually-used
+    // model — otherwise /model immediately followed by /new would silently
+    // drop the switch the user just asked for.
+    const queued = previous ? opencode.getModel(previous.id) : undefined;
+    const model = queued ?? previous?.model;
     if (model?.providerID && model?.id) {
-      try {
-        await opencode.switchModel(session.id, model.providerID, model.id);
-      } catch (err) {
-        log.warn('new', `model carry-over failed: ${(err as Error).message}`);
-        notes.push('could not carry the model over — check /model');
-      }
+      opencode.setModel(session.id, model.providerID, model.id);
     }
 
     if (title) {
