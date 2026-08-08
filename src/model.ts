@@ -1,6 +1,6 @@
 import type { Bot } from 'grammy';
 import { log } from './log';
-import { type ModelInfo, opencode } from './opencode';
+import { type ModelInfo, opencode, type SessionInfo } from './opencode';
 
 /** `provider/id`, the form the switch endpoint actually wants. */
 export const ref = (m: ModelInfo): string => `${m.providerID}/${m.id}`;
@@ -115,11 +115,13 @@ export function resolveModel(input: string, models: ModelInfo[]): Resolution {
 const list = (models: ModelInfo[]): string => models.map(m => `• <code>${ref(m)}</code>`).join('\n');
 
 /**
- * /model <ref> — switch the model of the most recently updated session.
+ * /model <ref> — queue a model for the most recently updated session's next
+ * prompt.
  *
- * Resolves before switching, because the endpoint accepts anything and returns
- * 204; an unresolved ref only fails on the NEXT prompt, as a session error
- * detached from the command that caused it.
+ * There is no server-side "switch model" call to make — see the comment on
+ * `opencode.setModel`. Resolving before queuing still matters: the server
+ * accepts anything, so an unresolved ref would only fail on the NEXT prompt,
+ * as a session error detached from the command that caused it.
  */
 export function registerModel(bot: Bot): void {
   bot.command('models', async ctx => {
@@ -158,8 +160,13 @@ export function registerModel(bot: Bot): void {
       return;
     }
 
-    const session = await opencode.latestSession().catch(() => undefined);
-    if (!session) return void (await ctx.reply('No sessions yet.'));
+    let session: SessionInfo;
+    try {
+      session = await opencode.currentSession();
+    } catch (err) {
+      await ctx.reply(`Could not resolve the session: ${(err as Error).message}`);
+      return;
+    }
 
     let models: ModelInfo[] = [];
     try {
@@ -196,26 +203,21 @@ export function registerModel(bot: Bot): void {
     const providerID = found.kind === 'match' ? found.model.providerID : found.providerID;
     const id = found.kind === 'match' ? found.model.id : found.id;
 
-    try {
-      await opencode.switchModel(session.id, providerID, id);
-    } catch (err) {
-      await ctx.reply(`Failed to switch model: ${(err as Error).message}`);
-      return;
-    }
+    opencode.setModel(session.id, providerID, id);
 
     const where = session.title ?? session.id;
     if (found.kind === 'unverified') {
       const hint = found.near.length ? `\n\nDid you mean:\n${list(found.near)}` : '';
       await ctx.reply(
-        `⚠️ Set ${where} to <code>${providerID}/${id}</code>, but the server does not list it.\n` +
-        `If the next message fails with “Model not found”, this ref is wrong.${hint}`,
+        `⚠️ Queued <code>${providerID}/${id}</code> for ${where}'s next message, but the server ` +
+        `does not list it.\nIf that message fails with “Model not found”, this ref is wrong.${hint}`,
         { parse_mode: 'HTML' },
       );
       return;
     }
 
     const note = found.exact ? '' : ` (matched “${arg}”)`;
-    await ctx.reply(`✅ ${where} now uses <code>${ref(found.model)}</code>${note}.`, {
+    await ctx.reply(`✅ ${where}'s next message will use <code>${ref(found.model)}</code>${note}.`, {
       parse_mode: 'HTML',
     });
   });

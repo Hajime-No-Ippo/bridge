@@ -50,7 +50,7 @@ export function createBot(): Bot {
     const fmt = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(2)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
     const lines = [`Chat ID: ${ctx.chat.id} ✅ allowed`];
     try {
-      const session = await opencode.latestSession();
+      const session = await opencode.pinnedSession();
       if (session) {
         const model = session.model
           ? `${session.model.providerID}/${session.model.id}`
@@ -107,11 +107,10 @@ export function createBot(): Bot {
 
   bot.command('stop', async ctx => {
     try {
-      const sessions = await opencode.listSessions();
-      const latest = sessions[0];
-      if (!latest) return void (await ctx.reply('No session to abort.'));
-      await opencode.abort(latest.id);
-      await ctx.reply(`Aborted ${latest.title ?? latest.id}`);
+      const session = await opencode.pinnedSession();
+      if (!session) return void (await ctx.reply('No session to abort.'));
+      await opencode.abort(session.id);
+      await ctx.reply(`Aborted ${session.title ?? session.id}`);
     } catch (err) {
       await ctx.reply(`Failed: ${(err as Error).message}`);
     }
@@ -254,15 +253,7 @@ export function createBot(): Bot {
         );
       }
 
-      // Resolve the session BEFORE classification starts. classify opens a real
-      // opencode session and only registers it as internal on the NEXT line, so
-      // running the two concurrently can catch that gap and hand us the
-      // classifier's own session — whose events the relay drops by design.
-      let session = await opencode.latestSession();
-      if (!session) {
-        log.info('prompt', 'no existing session — creating one');
-        session = await opencode.createSession();
-      }
+      const session = await opencode.currentSession();
 
       const emojiPromise = opts.classifyOn ? classifyReaction(opts.classifyOn) : undefined;
       await opencode.showToast(`telegram: ${opts.label.slice(0, 40)}`, 'info');
@@ -277,7 +268,7 @@ export function createBot(): Bot {
         void ctx
           .reply(
             '🔇 The prompt was accepted but nothing is processing it.\n' +
-            `Session: <code>${session!.id}</code>\n` +
+            `Session: <code>${session.id}</code>\n` +
             'Check the opencode server is still up and the session is not blocked.',
             { parse_mode: 'HTML' },
           )
@@ -348,8 +339,7 @@ export function createBot(): Bot {
       const command = text.slice(1).trim();
       if (!command) return void (await ctx.reply('Usage: <code>!ls -la</code>', { parse_mode: 'HTML' }));
       try {
-        const session = await opencode.latestSession();
-        if (!session) return void (await ctx.reply('No session to run in.'));
+        const session = await opencode.currentSession();
         await opencode.showToast(`telegram !: ${command.slice(0, 40)}`, 'warning');
         await opencode.runShell(session.id, command);
         await ctx.react('⚡').catch(() => { });

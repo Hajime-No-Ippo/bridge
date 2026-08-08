@@ -150,7 +150,7 @@ export async function checkAttachment(
   if (!modality) return ALLOW;
 
   try {
-    const session = await opencode.latestSession();
+    const session = await opencode.pinnedSession();
     const sm = session?.model;
     if (!sm?.providerID || !sm?.id) return ALLOW;
 
