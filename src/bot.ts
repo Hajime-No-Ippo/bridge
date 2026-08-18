@@ -10,9 +10,13 @@ import { registerModel } from './model';
 import { registerNew } from './new_session';
 import { discard, takeScreenshot } from './back_slash_commands/screenshot';
 import { checkAttachment, parseDeny } from './vision';
+import { createPost, parsePostCommand } from './tools/post_new_blogs';
 
 /** Parsed once — ATTACHMENT_DENY cannot change without a restart anyway. */
 const denyList = parseDeny(config.attachmentDeny);
+
+// Tracks chats that are mid- /post flow — awaiting blog content.
+const pendingPosts = new Map<number, { title: string; summary?: string }>();
 
 // Single source of truth for the command list — /start and /help both send it,
 // so the two can never drift apart.
@@ -23,6 +27,8 @@ const HELP_TEXT =
   '/rename <title> — rename current session\n' +
   '/model <provider/model-id> — switch model of current session\n' +
   '/screenshot — capture the TUI window\n' +
+  '/post [title] — create a blog post\n' +
+  '/quit — cancel blog posting\n' +
   '/stop — abort the running session\n' +
   '/whoami — your chat ID, what you are using\n' +
   '/help — this list\n' +
@@ -142,6 +148,27 @@ export function createBot(): Bot {
   registerRename(bot);
   registerModel(bot);
   registerNew(bot);
+
+  // /post — enter blog-posting flow: /post [Title]
+  bot.command('post', async ctx => {
+    const title = (ctx.message.text ?? '')
+      .replace(/^\/post\s*/i, '')
+      .trim();
+
+    pendingPosts.set(ctx.chat.id, { title: title || undefined });
+    await ctx.reply(
+      title
+        ? `Title: "${title}"\nPlease send your blog below. Send /quit to cancel.`
+        : 'Please send your blog below. Send /quit to cancel.',
+    );
+  });
+
+  bot.command('quit', async ctx => {
+    if (pendingPosts.delete(ctx.chat.id)) {
+      await ctx.reply('Post cancelled.');
+    }
+  });
+
   bot.on('callback_query:data', async ctx => {
     const [kind, ...rest] = ctx.callbackQuery.data.split('|');
 
@@ -332,6 +359,22 @@ export function createBot(): Bot {
   bot.on('message:text', async ctx => {
     const text = ctx.message.text;
     if (text.startsWith('/')) return;
+
+    // Check if this chat is in the /post flow
+    const pending = pendingPosts.get(ctx.chat.id);
+    if (pending) {
+      pendingPosts.delete(ctx.chat.id);
+      const title = pending.title || text.split('\n')[0].slice(0, 80);
+      await ctx.reply(`Creating post "${title}"...`);
+      const result = createPost({ title, content: text });
+      if (result.ok) {
+        await ctx.reply(`Post created: ${result.slug}\nCommitted and pushed to origin.`);
+      } else {
+        await ctx.reply(`Failed to create post: ${result.error}`);
+      }
+      return;
+    }
+
     // `!cmd` runs the shell directly instead of prompting the model. Note this
     // path is NOT gated by opencode's permission prompts — the command is
     // recorded as user-executed, so no Approve/Deny button appears for it.
