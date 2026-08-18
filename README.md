@@ -4,7 +4,7 @@
 > phone — browser control (macOS cua-driver / Linux CDP), pending-question
 > lifecycle, attachment capability guard.
 
-Mirror a live opencode session to Telegram and steer it from your phone.
+The theory behind Makescript: (Optional)
 
 ```
 opencode serve --port 4096     ← holds the sessions
@@ -15,6 +15,10 @@ Prompts go over the headless API (`prompt_async`); replies stream back on `/even
 so no TUI is needed. `opencode attach :4096` is only for watching on your desk.
 
 ## Quick start
+
+```make deps install setup``` concluded missing dependecies searching -> dependencies install -> verify if absent
+
+```make bridge``` will automatically start opencode server and attach the session for you.
 
 ```bash
 make deps install setup   # Ubuntu: bun + opencode + .env   (macOS: bun install, cp .env.example .env)
